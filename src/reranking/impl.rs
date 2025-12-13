@@ -25,6 +25,7 @@ use super::{
     DEFAULT_BATCH_SIZE,
 };
 
+#[cfg(not(target_family = "wasm"))]
 impl TextRerank {
     fn new(tokenizer: Tokenizer, session: Session) -> Self {
         let need_token_type_ids = session
