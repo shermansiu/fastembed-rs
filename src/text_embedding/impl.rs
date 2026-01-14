@@ -30,6 +30,11 @@ use super::{
     output, InitOptionsUserDefined, TextEmbedding, UserDefinedEmbeddingModel, DEFAULT_BATCH_SIZE,
 };
 
+#[cfg(target_arch = "wasm32")]
+use futures::executor::block_on;
+#[cfg(target_arch = "wasm32")]
+use ort::session::RunOptions;
+
 impl TextEmbedding {
     /// Try to generate a new TextEmbedding Instance
     ///
@@ -89,6 +94,7 @@ impl TextEmbedding {
     /// Create a TextEmbedding instance from model files provided by the user.
     ///
     /// This can be used for 'bring your own' embedding models
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn try_new_from_user_defined(
         model: UserDefinedEmbeddingModel,
         options: InitOptionsUserDefined,
@@ -105,6 +111,39 @@ impl TextEmbedding {
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_intra_threads(threads)?
             .commit_from_memory(&model.onnx_file)?;
+
+        let tokenizer = load_tokenizer(model.tokenizer_files, max_length)?;
+        Ok(Self::new(
+            tokenizer,
+            session,
+            model.pooling,
+            model.quantization,
+            model.output_key,
+        ))
+    }
+
+    /// Create a TextEmbedding instance from model files provided by the user.
+    ///
+    /// This can be used for 'bring your own' embedding models
+    #[cfg(target_arch = "wasm32")]
+    pub fn try_new_from_user_defined(
+        model: UserDefinedEmbeddingModel,
+        options: InitOptionsUserDefined,
+    ) -> Result<Self> {
+        let InitOptionsUserDefined {
+            execution_providers,
+            max_length,
+        } = options;
+
+        let threads = available_parallelism()?.get();
+
+        let session = block_on(
+            Session::builder()?
+                .with_execution_providers(execution_providers)?
+                .with_optimization_level(GraphOptimizationLevel::Level3)?
+                .with_intra_threads(threads)?
+                .commit_from_memory(&model.onnx_file)
+        )?;
 
         let tokenizer = load_tokenizer(model.tokenizer_files, max_length)?;
         Ok(Self::new(
@@ -279,6 +318,7 @@ impl TextEmbedding {
     /// arrays are aggregated, you can define your own array transformer
     /// and use it on [`EmbeddingOutput::export_with_transformer`] to extract the
     /// embeddings with your custom output type.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn transform<S: AsRef<str> + Send + Sync>(
         &mut self,
         texts: impl AsRef<[S]>,
@@ -364,6 +404,107 @@ impl TextEmbedding {
                     .session
                     .run(session_inputs)
                     .map_err(anyhow::Error::new)?
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v))
+                    .collect();
+                Ok(SingleBatchOutput {
+                    outputs: outputs_map,
+                    attention_mask_array,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(EmbeddingOutput::new(batches))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub fn transform<S: AsRef<str> + Send + Sync>(
+        &mut self,
+        texts: impl AsRef<[S]>,
+        batch_size: Option<usize>,
+    ) -> Result<EmbeddingOutput> {
+        let texts = texts.as_ref();
+        // Determine the batch size according to the quantization method used.
+        // Default if not specified
+        let batch_size = match self.quantization {
+            QuantizationMode::Dynamic => {
+                if let Some(batch_size) = batch_size {
+                    if batch_size < texts.len() {
+                        Err(anyhow::Error::msg(
+                            "Dynamic quantization cannot be used with batching. \
+                            This is due to the dynamic quantization process adjusting \
+                            the data range to fit each batch, making the embeddings \
+                            incompatible across batches. Try specifying a batch size \
+                            of `None`, or use a model with static or no quantization.",
+                        ))
+                    } else {
+                        Ok(texts.len())
+                    }
+                } else {
+                    Ok(texts.len())
+                }
+            }
+            _ => Ok(batch_size.unwrap_or(DEFAULT_BATCH_SIZE)),
+        }?;
+
+        let batches = texts
+            .chunks(batch_size)
+            .map(|batch| {
+                // Encode the texts in the batch
+                let inputs = batch.iter().map(|text| text.as_ref()).collect();
+                let encodings = self.tokenizer.encode_batch(inputs, true).map_err(|e| {
+                    anyhow::Error::msg(e.to_string()).context("Failed to encode the batch.")
+                })?;
+
+                // Extract the encoding length and batch size
+                let encoding_length = encodings
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("Tokenizer returned empty encodings"))?
+                    .len();
+                let batch_size = batch.len();
+
+                let max_size = encoding_length * batch_size;
+
+                // Preallocate arrays with the maximum size
+                let mut ids_array = Vec::with_capacity(max_size);
+                let mut mask_array = Vec::with_capacity(max_size);
+                let mut type_ids_array = Vec::with_capacity(max_size);
+
+                encodings.iter().for_each(|encoding| {
+                    let ids = encoding.get_ids();
+                    let mask = encoding.get_attention_mask();
+                    let type_ids = encoding.get_type_ids();
+
+                    ids_array.extend(ids.iter().map(|x| *x as i64));
+                    mask_array.extend(mask.iter().map(|x| *x as i64));
+                    type_ids_array.extend(type_ids.iter().map(|x| *x as i64));
+                });
+
+                let inputs_ids_array =
+                    Array::from_shape_vec((batch_size, encoding_length), ids_array)?;
+                let attention_mask_array =
+                    Array::from_shape_vec((batch_size, encoding_length), mask_array)?;
+                let token_type_ids_array =
+                    Array::from_shape_vec((batch_size, encoding_length), type_ids_array)?;
+
+                let mut session_inputs = ort::inputs![
+                    "input_ids" => Value::from_array(inputs_ids_array)?,
+                    "attention_mask" => Value::from_array(attention_mask_array.clone())?,
+                ];
+
+                if self.need_token_type_ids {
+                    session_inputs.push((
+                        "token_type_ids".into(),
+                        Value::from_array(token_type_ids_array)?.into(),
+                    ));
+                }
+
+                let options = RunOptions::new()?;
+
+                let outputs_map = block_on(
+                        self.session
+                            .run_async(session_inputs, &options)
+                    ).map_err(anyhow::Error::new)?
                     .into_iter()
                     .map(|(k, v)| (k.to_string(), v))
                     .collect();

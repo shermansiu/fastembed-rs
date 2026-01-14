@@ -32,6 +32,13 @@ ort = { version = "=2.0.0-rc.10", default-features = false, features = [
 serde_json = { version = "1" }
 tokenizers = { version = "0.22.0", default-features = false, features = ["unstable_wasm"] }
 
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+futures = { version = "0.3.31", features = ["std"] }
+
+[patch.crates-io]
+hf-hub = { git = "https://github.com/shermansiu/hf-hub", branch = "feat/wasm" }
+ort = { git = "https://github.com/shermansiu/ort", branch = "feat/wasm" }
+
 [features]
 default = ["ort-download-binaries", "hf-hub-native-tls", "image-models"]
 
