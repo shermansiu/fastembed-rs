@@ -33,7 +33,18 @@ serde_json = { version = "1" }
 tokenizers = { version = "0.22.0", default-features = false, features = ["unstable_wasm"] }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+_getrandom_alias_4 = { version = "0.4.1", package = "getrandom", features = [
+    "wasm_js",
+] }
+_getrandom_alias_3 = { version = "0.3.4", package = "getrandom", features = [
+    "wasm_js",
+] }
+_getrandom_alias_2 = { version = "0.2.17", package = "getrandom", features = [
+    "js",
+] }
 futures = { version = "0.3.31", features = ["std"] }
+ring = { version = "0.17.14", features = ["wasm32_unknown_unknown_js"] }
+rustls-pki-types = { version = "1.13.2", features = ["web"] }
 
 [patch.crates-io]
 hf-hub = { git = "https://github.com/shermansiu/hf-hub", branch = "feat/wasm" }
