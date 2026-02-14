@@ -6,19 +6,19 @@
   <a href="https://github.com/Anush008/fastembed-rs/actions/workflows/release.yml"><img src="https://github.com/Anush008/fastembed-rs/actions/workflows/release.yml/badge.svg?branch=main" alt="Semantic release"></a>
 </div>
 
-## 🍕 Features
+## Features
 
 - Supports synchronous usage. No dependency on Tokio.
 - Uses [@pykeio/ort](https://github.com/pykeio/ort) for performant ONNX inference.
 - Uses [@huggingface/tokenizers](https://github.com/huggingface/tokenizers) for fast encodings.
 
-## 🔍 Not looking for Rust?
+## Not looking for Rust?
 
-- Python 🐍: [fastembed](https://github.com/qdrant/fastembed)
-- Go 🐳: [fastembed-go](https://github.com/Anush008/fastembed-go)
-- JavaScript 🌐: [fastembed-js](https://github.com/Anush008/fastembed-js)
+- Python: [fastembed](https://github.com/qdrant/fastembed)
+- Go: [fastembed-go](https://github.com/Anush008/fastembed-go)
+- JavaScript: [fastembed-js](https://github.com/Anush008/fastembed-js)
 
-## 🤖 Models
+## Models
 
 ### Text Embedding
 
@@ -27,6 +27,7 @@
 - [**BAAI/bge-large-en-v1.5**](https://huggingface.co/BAAI/bge-large-en-v1.5)
 - [**BAAI/bge-small-zh-v1.5**](https://huggingface.co/BAAI/bge-small-zh-v1.5)
 - [**BAAI/bge-large-zh-v1.5**](https://huggingface.co/BAAI/bge-large-zh-v1.5)
+- [**BAAI/bge-m3**](https://huggingface.co/BAAI/bge-m3)
 - [**sentence-transformers/all-MiniLM-L6-v2**](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)
 - [**sentence-transformers/all-MiniLM-L12-v2**](https://huggingface.co/sentence-transformers/all-MiniLM-L12-v2)
 - [**sentence-transformers/all-mpnet-base-v2**](https://huggingface.co/sentence-transformers/all-mpnet-base-v2)
@@ -43,11 +44,15 @@
 - [**lightonai/ModernBERT-embed-large**](https://huggingface.co/lightonai/modernbert-embed-large)
 - [**Qdrant/clip-ViT-B-32-text**](https://huggingface.co/Qdrant/clip-ViT-B-32-text) - pairs with `clip-ViT-B-32-vision` for image-to-text search
 - [**jinaai/jina-embeddings-v2-base-code**](https://huggingface.co/jinaai/jina-embeddings-v2-base-code)
-- [**google/embeddinggemma-300m**](https://huggingface.co/google/embeddinggemma-300m) - 768-dim embeddings from Google
+- [**jinaai/jina-embeddings-v2-base-en**](https://huggingface.co/jinaai/jina-embeddings-v2-base-en)
+- [**google/embeddinggemma-300m**](https://huggingface.co/google/embeddinggemma-300m)
+- [**Qwen/Qwen3-Embedding-0.6B**](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) - requires `qwen3` feature (candle backend)
+- [**Qwen/Qwen3-Embedding-4B**](https://huggingface.co/Qwen/Qwen3-Embedding-4B) - requires `qwen3` feature (candle backend)
+- [**Qwen/Qwen3-Embedding-8B**](https://huggingface.co/Qwen/Qwen3-Embedding-8B) - requires `qwen3` feature (candle backend)
 - [**snowflake/snowflake-arctic-embed-xs**](https://huggingface.co/snowflake/snowflake-arctic-embed-xs)
 - [**snowflake/snowflake-arctic-embed-s**](https://huggingface.co/snowflake/snowflake-arctic-embed-s)
 - [**snowflake/snowflake-arctic-embed-m**](https://huggingface.co/snowflake/snowflake-arctic-embed-m)
-- [**snowflake/snowflake-arctic-embed-m-long**](https://huggingface.co/snowflake/snowflake-arctic-embed-m-long) - 2048 context length
+- [**snowflake/snowflake-arctic-embed-m-long**](https://huggingface.co/snowflake/snowflake-arctic-embed-m-long)
 - [**snowflake/snowflake-arctic-embed-l**](https://huggingface.co/snowflake/snowflake-arctic-embed-l)
 
 Quantized versions are also available for several models above (append `Q` to the model enum variant, e.g., `EmbeddingModel::BGESmallENV15Q`).
@@ -55,6 +60,7 @@ Quantized versions are also available for several models above (append `Q` to th
 ### Sparse Text Embedding
 
 - [**prithivida/Splade_PP_en_v1**](https://huggingface.co/prithivida/Splade_PP_en_v1) - Default
+- [**BAAI/bge-m3**](https://huggingface.co/BAAI/bge-m3)
 
 ### Image Embedding
 
@@ -75,7 +81,7 @@ Quantized versions are also available for several models above (append `Q` to th
 
 To support the library, please donate to our primary upstream dependency, [`ort`](https://github.com/pykeio/ort?tab=readme-ov-file#-sponsor-ort) - The Rust wrapper for the ONNX runtime.
 
-## 🚀 Installation
+## Installation
 
 Run the following in your project directory:
 
@@ -90,7 +96,7 @@ Or add the following line to your Cargo.toml:
 fastembed = "5"
 ```
 
-## 📖 Usage
+## Usage
 
 ### Text Embeddings
 
@@ -110,14 +116,39 @@ let documents = vec![
     "query: Hello, World!",
     "passage: This is an example passage.",
     // You can leave out the prefix but it's recommended
-    "fastembed-rs is licensed under Apache  2.0"
-    ];
+    "fastembed-rs is licensed under Apache 2.0"
+];
 
  // Generate embeddings with the default batch size, 256
  let embeddings = model.embed(documents, None)?;
 
  println!("Embeddings length: {}", embeddings.len()); // -> Embeddings length: 4
  println!("Embedding dimension: {}", embeddings[0].len()); // -> Embedding dimension: 384
+```
+
+### Qwen3 Embeddings
+
+Qwen3 embedding models are available behind the `qwen3` feature flag (candle backend).
+
+```toml
+[dependencies]
+fastembed = { version = "5", features = ["qwen3"] }
+```
+
+```rust
+use candle_core::{DType, Device};
+use fastembed::Qwen3TextEmbedding;
+
+let device = Device::Cpu;
+let model = Qwen3TextEmbedding::from_hf(
+    "Qwen/Qwen3-Embedding-0.6B",
+    &device,
+    DType::F32,
+    512,
+)?;
+
+let embeddings = model.embed(&["query: ...", "passage: ..."])?;
+println!("Embeddings length: {}", embeddings.len());
 ```
 
 ### Sparse Text Embeddings
@@ -137,8 +168,8 @@ let documents = vec![
     "passage: Hello, World!",
     "query: Hello, World!",
     "passage: This is an example passage.",
-    "fastembed-rs is licensed under Apache  2.0"
-    ];
+    "fastembed-rs is licensed under Apache 2.0"
+];
 
 // Generate embeddings with the default batch size, 256
 let embeddings: Vec<SparseEmbedding> = model.embed(documents, None)?;
@@ -185,7 +216,7 @@ let documents = vec![
     "panda is animal",
     "i dont know",
     "kind of mammal",
-    ];
+];
 
 // Rerank with the default batch size, 256 and return document contents
 let results = model.rerank("what is panda?", documents, true, None)?;
@@ -194,6 +225,6 @@ println!("Rerank result: {:?}", results);
 
 Alternatively, local model files can be used for inference via the `try_new_from_user_defined(...)` methods of respective structs.
 
-## 📄 LICENSE
+## LICENSE
 
 [Apache 2.0](https://github.com/Anush008/fastembed-rs/blob/main/LICENSE)

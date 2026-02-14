@@ -164,9 +164,9 @@ impl TextEmbedding {
         output_key: Option<OutputKey>,
     ) -> Self {
         let need_token_type_ids = session
-            .inputs
+            .inputs()
             .iter()
-            .any(|input| input.name == "token_type_ids");
+            .any(|input| input.name() == "token_type_ids");
 
         Self {
             tokenizer,
@@ -204,6 +204,7 @@ impl TextEmbedding {
             EmbeddingModel::BGESmallENV15Q => Some(Pooling::Cls),
             EmbeddingModel::BGESmallZHV15 => Some(Pooling::Cls),
             EmbeddingModel::BGELargeZHV15 => Some(Pooling::Cls),
+            EmbeddingModel::BGEM3 => Some(Pooling::Cls),
 
             EmbeddingModel::NomicEmbedTextV1 => Some(Pooling::Mean),
             EmbeddingModel::NomicEmbedTextV15 => Some(Pooling::Mean),
@@ -231,6 +232,7 @@ impl TextEmbedding {
             EmbeddingModel::ClipVitB32 => Some(Pooling::Mean),
 
             EmbeddingModel::JinaEmbeddingsV2BaseCode => Some(Pooling::Mean),
+            EmbeddingModel::JinaEmbeddingsV2BaseEN => Some(Pooling::Mean),
 
             EmbeddingModel::EmbeddingGemma300M => Some(Pooling::Mean),
 

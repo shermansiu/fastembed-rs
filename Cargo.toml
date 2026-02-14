@@ -1,6 +1,6 @@
 [package]
 name = "fastembed"
-version = "5.5.0"
+version = "5.9.0"
 edition = "2021"
 description = "Library for generating vector embeddings, reranking locally."
 license = "Apache-2.0"
@@ -26,11 +26,18 @@ anyhow = { version = "1" }
 hf-hub = { version = "0.4.1", default-features = false, optional = true }
 image = { version = "0.25.2", optional = true }
 ndarray = { version = "0.17", default-features = false }
-ort = { version = "=2.0.0-rc.10", default-features = false, features = [
+ort = { version = "=2.0.0-rc.11", default-features = false, features = [
   "ndarray", "std"
 ] }
+safetensors = { version = "0.7" }
 serde_json = { version = "1" }
-tokenizers = { version = "0.22.0", default-features = false, features = ["unstable_wasm"] }
+serde = { version = "1", features = ["derive"] }
+tokenizers = { version = "0.22.0", default-features = false, features = ["onig", "unstable_wasm"] }
+candle-nn = { version = "0.9.1", optional = true }
+candle-core = { version = "0.9.1", optional = true }
+
+intel-mkl-src = { version = "0.8.1", optional = true }
+accelerate-src = { version = "0.3.2", optional = true }
 
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 _getrandom_alias_4 = { version = "0.4.1", package = "getrandom", features = [
@@ -48,19 +55,27 @@ rustls-pki-types = { version = "1.13.2", features = ["web"] }
 
 [patch.crates-io]
 hf-hub = { git = "https://github.com/shermansiu/hf-hub", branch = "feat/wasm" }
-ort = { git = "https://github.com/shermansiu/ort", branch = "feat/wasm" }
 
 [features]
-default = ["ort-download-binaries", "hf-hub-native-tls", "image-models"]
+default = ["ort-download-binaries-native-tls", "hf-hub-native-tls", "image-models"]
 
 hf-hub = ["dep:hf-hub", "hf-hub?/ureq"]
 hf-hub-native-tls = ["hf-hub", "hf-hub?/native-tls"]
 hf-hub-rustls-tls = ["hf-hub", "hf-hub?/rustls-tls"]
 
-ort-download-binaries = ["ort/download-binaries"]
+ort-download-binaries = ["ort-download-binaries-native-tls"]
+ort-download-binaries-native-tls = ["ort/download-binaries", "ort/tls-native"]
+ort-download-binaries-rustls-tls = ["ort/download-binaries", "ort/tls-rustls"]
 ort-load-dynamic = ["ort/load-dynamic"]
 
+qwen3 = ["dep:candle-core", "dep:candle-nn", "hf-hub"]
+
 image-models = ["image"]
+mkl = ["qwen3","dep:intel-mkl-src", "candle-nn/mkl", "candle-core/mkl"]
+accelerate = ["qwen3", "dep:accelerate-src", "candle-core/accelerate", "candle-nn/accelerate"]
+cuda = ["qwen3", "candle-core/cuda", "candle-nn/cuda"]
+cudnn = ["qwen3", "candle-core/cudnn", "candle-nn/cudnn", "cuda"]
+metal = ["qwen3", "candle-core/metal", "candle-nn/metal"]
 
 # This feature does not change any code, but is used to limit tests if
 # the user does not have `optimum-cli` or even python installed.
