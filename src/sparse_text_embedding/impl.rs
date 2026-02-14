@@ -282,13 +282,12 @@ impl SparseTextEmbedding {
                     Array::from_shape_vec((batch_size, encoding_length), ids_array)?;
                 let attention_mask_array =
                     Array::from_shape_vec((batch_size, encoding_length), mask_array)?;
-                // removed CowArray usage, use owned array
 
                 let token_type_ids_array =
                     Array::from_shape_vec((batch_size, encoding_length), type_ids_array)?;
 
                 let mut session_inputs = ort::inputs![
-                    "input_ids" => Value::from_array(inputs_ids_array)?,
+                    "input_ids" => Value::from_array(inputs_ids_array.clone())?,
                     "attention_mask" => Value::from_array(attention_mask_array.clone())?,
                 ];
 
@@ -299,29 +298,43 @@ impl SparseTextEmbedding {
                     ));
                 }
 
-                let options = RunOptions::new()?;
-                let outputs = block_on(self.session.run_async(session_inputs, &options))?;
+                let outputs = self.session.run(session_inputs)?;
 
-                // Try to get the only output key
-                // If multiple, then default to `last_hidden_state`
+                let embeddings = match self.model {
+                    SparseModel::SPLADEPPV1 => {
                 let last_hidden_state_key = match outputs.len() {
-                    1 => outputs
-                        .keys()
-                        .next()
-                        .ok_or_else(|| anyhow::anyhow!("Expected one output but found none"))?,
+                            1 => outputs.keys().next().ok_or_else(|| {
+                                anyhow::anyhow!("Expected one output but found none")
+                            })?,
                     _ => "last_hidden_state",
                 };
 
-                let (shape, data) = outputs[last_hidden_state_key].try_extract_tensor::<f32>()?;
+                        let (shape, data) =
+                            outputs[last_hidden_state_key].try_extract_tensor::<f32>()?;
                 let shape: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
                 let output_array = ndarray::ArrayViewD::from_shape(shape.as_slice(), data)?;
                 let attention_mask_cow = ndarray::CowArray::from(&attention_mask_array);
 
-                let embeddings = SparseTextEmbedding::post_process(
-                    &self.model,
-                    &output_array,
-                    &attention_mask_cow,
-                );
+                        Self::post_process_splade(&output_array, &attention_mask_cow)
+                    }
+                    SparseModel::BGEM3 => {
+                        let output_key = outputs
+                            .keys()
+                            .next()
+                            .ok_or_else(|| anyhow::anyhow!("Expected at least one output"))?;
+
+                        let (shape, data) = outputs[output_key].try_extract_tensor::<f32>()?;
+                        let shape: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
+                        let hidden_states =
+                            ndarray::ArrayViewD::from_shape(shape.as_slice(), data)?;
+
+                        Self::post_process_bgem3(
+                            &hidden_states,
+                            &inputs_ids_array,
+                            &attention_mask_array,
+                        )
+                    }
+                };
 
                 Ok(embeddings)
             })
