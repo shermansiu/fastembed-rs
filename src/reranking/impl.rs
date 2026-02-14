@@ -1,38 +1,30 @@
 #[cfg(feature = "hf-hub")]
 use anyhow::Context;
-#[cfg(not(target_family = "wasm"))]
 use anyhow::Result;
-#[cfg(not(target_family = "wasm"))]
 use ort::{
     session::{builder::GraphOptimizationLevel, Session},
     value::Value,
 };
-#[cfg(not(target_family = "wasm"))]
 use std::thread::available_parallelism;
 
 #[cfg(feature = "hf-hub")]
 use crate::common::load_tokenizer_hf_hub;
-#[cfg(not(target_family = "wasm"))]
 use crate::{
     common::load_tokenizer, models::reranking::reranker_model_list, RerankerModel,
     RerankerModelInfo,
 };
 #[cfg(feature = "hf-hub")]
 use hf_hub::{api::sync::ApiBuilder, Cache};
-#[cfg(not(target_family = "wasm"))]
 use ndarray::{s, Array};
-#[cfg(not(target_family = "wasm"))]
 use tokenizers::Tokenizer;
 
 #[cfg(feature = "hf-hub")]
 use super::RerankInitOptions;
-#[cfg(not(target_family = "wasm"))]
 use super::{
     OnnxSource, RerankInitOptionsUserDefined, RerankResult, TextRerank, UserDefinedRerankingModel,
     DEFAULT_BATCH_SIZE,
 };
 
-#[cfg(not(target_family = "wasm"))]
 impl TextRerank {
     fn new(tokenizer: Tokenizer, session: Session) -> Self {
         let need_token_type_ids = session

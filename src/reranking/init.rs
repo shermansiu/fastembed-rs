@@ -3,19 +3,14 @@ use crate::{
     init::{HasMaxLength, InitOptionsWithLength},
     RerankerModel, TokenizerFiles,
 };
-#[cfg(not(target_family = "wasm"))]
 use ort::{execution_providers::ExecutionProviderDispatch, session::Session};
-#[cfg(target_family = "wasm")]
-use ort::execution_providers::ExecutionProviderDispatch;
 use std::path::PathBuf;
 use tokenizers::Tokenizer;
 
 #[derive(Debug)]
 pub struct TextRerank {
     pub tokenizer: Tokenizer,
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) session: Session,
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) need_token_type_ids: bool,
 }
 
