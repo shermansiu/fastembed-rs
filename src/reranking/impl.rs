@@ -1,16 +1,24 @@
 #[cfg(feature = "hf-hub")]
 use anyhow::Context;
 use anyhow::Result;
-use ort::{
-    session::{builder::GraphOptimizationLevel, Session},
-    value::Value,
+#[cfg(not(target_arch = "wasm32"))]
+use {
+    ort::{
+        session::{builder::GraphOptimizationLevel, Session},
+        value::Value,
+    },
+    std::thread::available_parallelism,
+    crate::common::load_tokenizer,
+    ndarray::{s, Array},
+    super::{OnnxSource, RerankInitOptionsUserDefined, UserDefinedRerankingModel},
 };
-use std::thread::available_parallelism;
+#[cfg(target_arch = "wasm32")]
+use ort::{session::Session, value::Value};
 
 #[cfg(feature = "hf-hub")]
 use crate::common::load_tokenizer_hf_hub;
 use crate::{
-    common::load_tokenizer, models::reranking::reranker_model_list, RerankerModel,
+    models::reranking::reranker_model_list, RerankerModel,
     RerankerModelInfo,
 };
 #[cfg(feature = "hf-hub")]
@@ -21,11 +29,18 @@ use tokenizers::Tokenizer;
 #[cfg(feature = "hf-hub")]
 use super::RerankInitOptions;
 use super::{
-    OnnxSource, RerankInitOptionsUserDefined, RerankResult, TextRerank, UserDefinedRerankingModel,
-    DEFAULT_BATCH_SIZE,
+    RerankResult, TextRerank, DEFAULT_BATCH_SIZE,
+};
+
+#[cfg(target_arch = "wasm32")]
+use {
+    futures::executor::block_on,
+    ort::session::{RunOptions, SessionOutputs},
+    ort_web::sync_outputs,
 };
 
 impl TextRerank {
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     fn new(tokenizer: Tokenizer, session: Session) -> Self {
         let need_token_type_ids = session
             .inputs()
@@ -49,7 +64,7 @@ impl TextRerank {
         reranker_model_list()
     }
 
-    #[cfg(feature = "hf-hub")]
+    #[cfg(all(feature = "hf-hub", not(target_arch = "wasm32")))]
     pub fn try_new(options: RerankInitOptions) -> Result<TextRerank> {
         use super::RerankInitOptions;
 
@@ -96,6 +111,7 @@ impl TextRerank {
     /// Create a TextRerank instance from model files provided by the user.
     ///
     /// This can be used for 'bring your own' reranking models
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn try_new_from_user_defined(
         model: UserDefinedRerankingModel,
         options: RerankInitOptionsUserDefined,
@@ -181,7 +197,23 @@ impl TextRerank {
                 ));
             }
 
+            #[cfg(not(target_arch = "wasm32"))]
             let outputs = self.session.run(session_inputs)?;
+            #[cfg(target_arch = "wasm32")]
+            let run_options = RunOptions::new()?;
+            #[cfg(target_arch = "wasm32")]
+            let outputs = {
+                block_on(async {
+                    let mut outputs = self
+                        .session
+                        .run_async(session_inputs, &run_options)
+                        .await?;
+                    sync_outputs(&mut outputs)
+                        .await
+                        .map_err(ort::Error::wrap)?;
+                    Ok::<SessionOutputs<'_>, ort::Error>(outputs)
+                })
+            }?;
             let outputs = outputs
                 .get("logits")
                 .ok_or_else(|| anyhow::Error::msg("Output does not contain 'logits' key"))?

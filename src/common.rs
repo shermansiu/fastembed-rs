@@ -33,7 +33,7 @@ pub struct TokenizerFiles {
 
 /// The procedure for loading tokenizer files from the hugging face hub is separated
 /// from the main load_tokenizer function (which is expecting bytes, from any source).
-#[cfg(feature = "hf-hub")]
+#[cfg(all(feature = "hf-hub", not(target_arch = "wasm32")))]
 pub fn load_tokenizer_hf_hub(model_repo: ApiRepo, max_length: usize) -> Result<Tokenizer> {
     let tokenizer_files: TokenizerFiles = TokenizerFiles {
         tokenizer_file: std::fs::read(model_repo.get("tokenizer.json")?)?,
