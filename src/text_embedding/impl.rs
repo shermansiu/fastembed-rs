@@ -115,10 +115,15 @@ impl TextEmbedding {
         #[cfg(target_arch = "wasm32")]
         let session = {
             block_on(async {
-                Session::builder()?
+                let mut session_builder = Session::builder()?
                     .with_execution_providers(execution_providers)?
                     .with_optimization_level(GraphOptimizationLevel::Level3)?
-                    .with_intra_threads(threads)?
+                    .with_intra_threads(threads)?;
+                if let Some(onnx_data_file) = model.onnx_data_file {
+                    session_builder = session_builder
+                        .with_external_data(onnx_data_file.as_ref())?
+                }
+                session_builder
                     .commit_from_memory(&model.onnx_file)
                     .await
             })

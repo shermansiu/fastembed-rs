@@ -78,6 +78,7 @@ impl From<TextInitOptions> for InitOptionsUserDefined {
 pub struct UserDefinedEmbeddingModel {
     pub onnx_file: Vec<u8>,
     pub tokenizer_files: TokenizerFiles,
+    pub onnx_data_file: Option<Vec<u8>>,
     pub pooling: Option<Pooling>,
     pub quantization: QuantizationMode,
     pub output_key: Option<OutputKey>,
@@ -88,6 +89,7 @@ impl UserDefinedEmbeddingModel {
         Self {
             onnx_file,
             tokenizer_files,
+            onnx_data_file: None,
             quantization: QuantizationMode::None,
             pooling: None,
             output_key: None,
