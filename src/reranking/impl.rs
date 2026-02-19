@@ -34,8 +34,7 @@ use super::{
 
 #[cfg(target_arch = "wasm32")]
 use {
-    futures::executor::block_on,
-    ort::session::{RunOptions, SessionOutputs},
+    ort::session::RunOptions,
     ort_web::sync_outputs,
 };
 
@@ -140,6 +139,7 @@ impl TextRerank {
     /// Rerank documents using the reranker model and returns the results sorted by score in descending order.
     ///
     /// Accepts a query and a collection of documents implementing [`AsRef<str>`].
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn rerank<S: AsRef<str> + Send + Sync>(
         &mut self,
         query: S,
@@ -197,23 +197,101 @@ impl TextRerank {
                 ));
             }
 
-            #[cfg(not(target_arch = "wasm32"))]
-            let outputs = self.session.run(session_inputs)?;
-            #[cfg(target_arch = "wasm32")]
+            let outputs = self.session
+                .run(session_inputs)?
+                .get("logits")
+                .ok_or_else(|| anyhow::Error::msg("Output does not contain 'logits' key"))?
+                .try_extract_array()
+                .map_err(|e| {
+                    anyhow::Error::msg(format!("Failed to extract logits tensor: {}", e))
+                })?;
+            let batch_scores: Vec<f32> = outputs
+                .slice(s![.., 0])
+                .rows()
+                .into_iter()
+                .flat_map(|row| row.to_vec())
+                .collect();
+            scores.extend(batch_scores);
+        }
+
+        // Return top_n_result of type Vec<RerankResult> ordered by score in descending order, don't use binary heap
+        let mut top_n_result: Vec<RerankResult> = scores
+            .into_iter()
+            .enumerate()
+            .map(|(index, score)| RerankResult {
+                document: return_documents.then(|| documents[index].as_ref().to_string()),
+                score,
+                index,
+            })
+            .collect();
+        top_n_result.sort_by(|a, b| a.score.total_cmp(&b.score).reverse());
+        Ok(top_n_result)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn rerank<S: AsRef<str> + Send + Sync>(
+        &mut self,
+        query: S,
+        documents: impl AsRef<[S]>,
+        return_documents: bool,
+        batch_size: Option<usize>,
+    ) -> Result<Vec<RerankResult>> {
+        let documents = documents.as_ref();
+        let batch_size = batch_size.unwrap_or(DEFAULT_BATCH_SIZE);
+        let q = query.as_ref();
+
+        let mut scores: Vec<f32> = Vec::with_capacity(documents.len());
+        for batch in documents.chunks(batch_size) {
+            let inputs = batch.iter().map(|d| (q, d.as_ref())).collect();
+            let encodings = self
+                .tokenizer
+                .encode_batch(inputs, true)
+                .map_err(|e| anyhow::Error::msg(e.to_string()).context("Failed to encode batch"))?;
+
+            let encoding_length = encodings
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("Tokenizer returned empty encodings"))?
+                .len();
+            let batch_size = batch.len();
+            let max_size = encoding_length * batch_size;
+
+            let mut ids_array = Vec::with_capacity(max_size);
+            let mut mask_array = Vec::with_capacity(max_size);
+            let mut type_ids_array = Vec::with_capacity(max_size);
+
+            encodings.iter().for_each(|encoding| {
+                let ids = encoding.get_ids();
+                let mask = encoding.get_attention_mask();
+                let type_ids = encoding.get_type_ids();
+
+                ids_array.extend(ids.iter().map(|x| *x as i64));
+                mask_array.extend(mask.iter().map(|x| *x as i64));
+                type_ids_array.extend(type_ids.iter().map(|x| *x as i64));
+            });
+
+            let inputs_ids_array = Array::from_shape_vec((batch_size, encoding_length), ids_array)?;
+            let attention_mask_array =
+                Array::from_shape_vec((batch_size, encoding_length), mask_array)?;
+            let token_type_ids_array =
+                Array::from_shape_vec((batch_size, encoding_length), type_ids_array)?;
+
+            let mut session_inputs = ort::inputs![
+                "input_ids" => Value::from_array(inputs_ids_array)?,
+                "attention_mask" => Value::from_array(attention_mask_array)?,
+            ];
+            if self.need_token_type_ids {
+                session_inputs.push((
+                    "token_type_ids".into(),
+                    Value::from_array(token_type_ids_array)?.into(),
+                ));
+            }
+
             let run_options = RunOptions::new()?;
-            #[cfg(target_arch = "wasm32")]
-            let outputs = {
-                block_on(async {
-                    let mut outputs = self
-                        .session
-                        .run_async(session_inputs, &run_options)
-                        .await?;
-                    sync_outputs(&mut outputs)
-                        .await
-                        .map_err(ort::Error::wrap)?;
-                    Ok::<SessionOutputs<'_>, ort::Error>(outputs)
-                })
-            }?;
+            let mut outputs = self
+                .session
+                .run_async(session_inputs, &run_options)
+                .await?;
+            sync_outputs(&mut outputs).await?;
             let outputs = outputs
                 .get("logits")
                 .ok_or_else(|| anyhow::Error::msg("Output does not contain 'logits' key"))?

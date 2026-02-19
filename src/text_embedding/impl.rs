@@ -31,8 +31,7 @@ use super::{
 };
 #[cfg(target_arch = "wasm32")]
 use {
-    futures::executor::block_on,
-    ort::session::{RunOptions, SessionOutputs},
+    ort::session::RunOptions,
     ort_web::sync_outputs,
 };
 
@@ -95,6 +94,7 @@ impl TextEmbedding {
     /// Create a TextEmbedding instance from model files provided by the user.
     ///
     /// This can be used for 'bring your own' embedding models
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn try_new_from_user_defined(
         model: UserDefinedEmbeddingModel,
         options: InitOptionsUserDefined,
@@ -106,28 +106,45 @@ impl TextEmbedding {
 
         let threads = available_parallelism()?.get();
 
-        #[cfg(not(target_arch = "wasm32"))]
         let session = Session::builder()?
             .with_execution_providers(execution_providers)?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_intra_threads(threads)?
             .commit_from_memory(&model.onnx_file)?;
-        #[cfg(target_arch = "wasm32")]
-        let session = {
-            block_on(async {
-                let mut session_builder = Session::builder()?
-                    .with_execution_providers(execution_providers)?
-                    .with_optimization_level(GraphOptimizationLevel::Level3)?
-                    .with_intra_threads(threads)?;
-                if let Some(onnx_data_file) = model.onnx_data_file {
-                    session_builder = session_builder
-                        .with_external_data(onnx_data_file.as_ref())?
-                }
-                session_builder
-                    .commit_from_memory(&model.onnx_file)
-                    .await
-            })
-        }?;
+
+        let tokenizer = load_tokenizer(model.tokenizer_files, max_length)?;
+        Ok(Self::new(
+            tokenizer,
+            session,
+            model.pooling,
+            model.quantization,
+            model.output_key,
+        ))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn try_new_from_user_defined(
+        model: UserDefinedEmbeddingModel,
+        options: InitOptionsUserDefined,
+    ) -> Result<Self> {
+        let InitOptionsUserDefined {
+            execution_providers,
+            max_length,
+        } = options;
+
+        let threads = available_parallelism()?.get();
+
+        let mut session_builder = Session::builder()?
+            .with_execution_providers(execution_providers)?
+            .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_intra_threads(threads)?;
+        if let Some(onnx_data_file) = model.onnx_data_file {
+            session_builder = session_builder
+                .with_external_data(onnx_data_file.as_ref())?
+        }
+        let session = session_builder
+            .commit_from_memory(&model.onnx_file)
+            .await?;
 
         let tokenizer = load_tokenizer(model.tokenizer_files, max_length)?;
         Ok(Self::new(
@@ -304,6 +321,7 @@ impl TextEmbedding {
     /// arrays are aggregated, you can define your own array transformer
     /// and use it on [`EmbeddingOutput::export_with_transformer`] to extract the
     /// embeddings with your custom output type.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn transform<S: AsRef<str> + Send + Sync>(
         &mut self,
         texts: impl AsRef<[S]>,
@@ -385,26 +403,9 @@ impl TextEmbedding {
                     ));
                 }
 
-                #[cfg(not(target_arch = "wasm32"))]
-                let session_outputs = self
+                let outputs_map = self
                     .session
-                    .run(session_inputs);
-                #[cfg(target_arch = "wasm32")]
-                let run_options = RunOptions::new()?;
-                #[cfg(target_arch = "wasm32")]
-                let session_outputs: std::result::Result<SessionOutputs<'_>, ort::Error> = {
-                    block_on(async {
-                        let mut outputs = self
-                            .session
-                            .run_async(session_inputs, &run_options)
-                            .await?;
-                        sync_outputs(&mut outputs)
-                            .await
-                            .map_err(ort::Error::wrap)?;
-                        Ok(outputs)
-                    })
-                };
-                let outputs_map = session_outputs
+                    .run(session_inputs)
                     .map_err(anyhow::Error::new)?
                     .into_iter()
                     .map(|(k, v)| (k.to_string(), v))
@@ -419,6 +420,111 @@ impl TextEmbedding {
         Ok(EmbeddingOutput::new(batches))
     }
 
+    #[cfg(target_arch = "wasm32")]
+    pub async fn transform<S: AsRef<str> + Send + Sync>(
+        &mut self,
+        texts: impl AsRef<[S]>,
+        batch_size: Option<usize>,
+    ) -> Result<EmbeddingOutput> {
+        let texts = texts.as_ref();
+        // Determine the batch size according to the quantization method used.
+        // Default if not specified
+        let batch_size = match self.quantization {
+            QuantizationMode::Dynamic => {
+                if let Some(batch_size) = batch_size {
+                    if batch_size < texts.len() {
+                        Err(anyhow::Error::msg(
+                            "Dynamic quantization cannot be used with batching. \
+                            This is due to the dynamic quantization process adjusting \
+                            the data range to fit each batch, making the embeddings \
+                            incompatible across batches. Try specifying a batch size \
+                            of `None`, or use a model with static or no quantization.",
+                        ))
+                    } else {
+                        Ok(texts.len())
+                    }
+                } else {
+                    Ok(texts.len())
+                }
+            }
+            _ => Ok(batch_size.unwrap_or(DEFAULT_BATCH_SIZE)),
+        }?;
+
+        let batches = texts.chunks(batch_size);
+        let mut all_embeddings = Vec::with_capacity(batches.len());
+        for batch in batches {
+            // Encode the texts in the batch
+            let inputs = batch.iter().map(|text| text.as_ref()).collect();
+            let encodings = self.tokenizer.encode_batch(inputs, true).map_err(|e| {
+                anyhow::Error::msg(e.to_string()).context("Failed to encode the batch.")
+            })?;
+
+            // Extract the encoding length and batch size
+            let encoding_length = encodings
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("Tokenizer returned empty encodings"))?
+                .len();
+            let batch_size = batch.len();
+
+            let max_size = encoding_length * batch_size;
+
+            // Preallocate arrays with the maximum size
+            let mut ids_array = Vec::with_capacity(max_size);
+            let mut mask_array = Vec::with_capacity(max_size);
+            let mut type_ids_array = Vec::with_capacity(max_size);
+
+            encodings.iter().for_each(|encoding| {
+                let ids = encoding.get_ids();
+                let mask = encoding.get_attention_mask();
+                let type_ids = encoding.get_type_ids();
+
+                ids_array.extend(ids.iter().map(|x| *x as i64));
+                mask_array.extend(mask.iter().map(|x| *x as i64));
+                type_ids_array.extend(type_ids.iter().map(|x| *x as i64));
+            });
+
+            let inputs_ids_array =
+                Array::from_shape_vec((batch_size, encoding_length), ids_array)?;
+            let attention_mask_array =
+                Array::from_shape_vec((batch_size, encoding_length), mask_array)?;
+            let token_type_ids_array =
+                Array::from_shape_vec((batch_size, encoding_length), type_ids_array)?;
+
+            let mut session_inputs = ort::inputs![
+                "input_ids" => Value::from_array(inputs_ids_array)?,
+                "attention_mask" => Value::from_array(attention_mask_array.clone())?,
+            ];
+
+            if self.need_token_type_ids {
+                session_inputs.push((
+                    "token_type_ids".into(),
+                    Value::from_array(token_type_ids_array)?.into(),
+                ));
+            }
+
+            let run_options = RunOptions::new()?;
+            let mut outputs = self
+                .session
+                .run_async(session_inputs, &run_options)
+                .await?;
+            sync_outputs(&mut outputs)
+                .await
+                .map_err(anyhow::Error::new);
+            let outputs_map = outputs
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v))
+                .collect();
+            all_embeddings.push(
+                SingleBatchOutput {
+                    outputs: outputs_map,
+                    attention_mask_array,
+                }
+            )
+        }
+
+        Ok(EmbeddingOutput::new(all_embeddings))
+    }
+
     /// Method to generate sentence embeddings for a collection of texts.
     ///
     /// Accepts anything that can be referenced as a slice of elements implementing
@@ -430,12 +536,33 @@ impl TextEmbedding {
     ///
     /// This method is a higher level method than [`TextEmbedding::transform`] by utilizing
     /// the default output precedence and array transformer for the [`TextEmbedding`] model.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn embed<S: AsRef<str> + Send + Sync>(
         &mut self,
         texts: impl AsRef<[S]>,
         batch_size: Option<usize>,
     ) -> Result<Vec<Embedding>> {
         let batches = self.transform(texts.as_ref(), batch_size)?;
+        if let Some(output_key) = &self.output_key {
+            batches.export_with_transformer(output::transformer_with_precedence(
+                output_key,
+                self.pooling.clone(),
+            ))
+        } else {
+            batches.export_with_transformer(output::transformer_with_precedence(
+                output::OUTPUT_TYPE_PRECEDENCE,
+                self.pooling.clone(),
+            ))
+        }
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn embed<S: AsRef<str> + Send + Sync>(
+        &mut self,
+        texts: impl AsRef<[S]>,
+        batch_size: Option<usize>,
+    ) -> Result<Vec<Embedding>> {
+        let batches = self.transform(texts.as_ref(), batch_size).await?;
         if let Some(output_key) = &self.output_key {
             batches.export_with_transformer(output::transformer_with_precedence(
                 output_key,

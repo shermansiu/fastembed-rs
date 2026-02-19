@@ -26,8 +26,7 @@ use super::{SparseTextEmbedding, DEFAULT_BATCH_SIZE};
 
 #[cfg(target_arch = "wasm32")]
 use {
-    futures::executor::block_on,
-    ort::session::{RunOptions, SessionOutputs},
+    ort::session::RunOptions,
     ort_web::sync_outputs,
 };
 
@@ -126,6 +125,7 @@ impl SparseTextEmbedding {
     ///
     /// Accepts anything that can be referenced as a slice of elements implementing
     /// [`AsRef<str>`], such as `Vec<String>`, `Vec<&str>`, `&[String]`, or `&[&str]`.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn embed<S: AsRef<str> + Send + Sync>(
         &mut self,
         texts: impl AsRef<[S]>,
@@ -188,23 +188,7 @@ impl SparseTextEmbedding {
                     ));
                 }
 
-                #[cfg(not(target_arch = "wasm32"))]
                 let outputs = self.session.run(session_inputs)?;
-                #[cfg(target_arch = "wasm32")]
-                let run_options = RunOptions::new()?;
-                #[cfg(target_arch = "wasm32")]
-                let outputs = {
-                    block_on(async {
-                        let mut outputs = self
-                            .session
-                            .run_async(session_inputs, &run_options)
-                            .await?;
-                        sync_outputs(&mut outputs)
-                            .await
-                            .map_err(ort::Error::wrap)?;
-                        Ok::<SessionOutputs<'_>, ort::Error>(outputs)
-                    })
-                }?;
 
                 let embeddings = match self.model {
                     SparseModel::SPLADEPPV1 => {
@@ -250,6 +234,118 @@ impl SparseTextEmbedding {
             .collect();
 
         Ok(output)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub async fn embed<S: AsRef<str> + Send + Sync>(
+        &mut self,
+        texts: impl AsRef<[S]>,
+        batch_size: Option<usize>,
+    ) -> Result<Vec<SparseEmbedding>> {
+        let texts = texts.as_ref();
+        // Determine the batch size, default if not specified
+        let batch_size = batch_size.unwrap_or(DEFAULT_BATCH_SIZE);
+
+        let mut all_embeddings = Vec::with_capacity(texts.len());
+        for batch in texts.chunks(batch_size) {
+            // Encode the texts in the batch
+            let inputs = batch.iter().map(|text| text.as_ref()).collect();
+            let encodings = self.tokenizer.encode_batch(inputs, true).map_err(|e| {
+                anyhow::Error::msg(e.to_string()).context("Failed to encode the batch.")
+            })?;
+
+            // Extract the encoding length and batch size
+            let encoding_length = encodings
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("Tokenizer returned empty encodings"))?
+                .len();
+            let batch_size = batch.len();
+
+            let max_size = encoding_length * batch_size;
+
+            // Preallocate arrays with the maximum size
+            let mut ids_array = Vec::with_capacity(max_size);
+            let mut mask_array = Vec::with_capacity(max_size);
+            let mut type_ids_array = Vec::with_capacity(max_size);
+
+            encodings.iter().for_each(|encoding| {
+                let ids = encoding.get_ids();
+                let mask = encoding.get_attention_mask();
+                let type_ids = encoding.get_type_ids();
+
+                ids_array.extend(ids.iter().map(|x| *x as i64));
+                mask_array.extend(mask.iter().map(|x| *x as i64));
+                type_ids_array.extend(type_ids.iter().map(|x| *x as i64));
+            });
+
+            let inputs_ids_array =
+                Array::from_shape_vec((batch_size, encoding_length), ids_array)?;
+            let attention_mask_array =
+                Array::from_shape_vec((batch_size, encoding_length), mask_array)?;
+
+            let token_type_ids_array =
+                Array::from_shape_vec((batch_size, encoding_length), type_ids_array)?;
+
+            let mut session_inputs = ort::inputs![
+                "input_ids" => Value::from_array(inputs_ids_array.clone())?,
+                "attention_mask" => Value::from_array(attention_mask_array.clone())?,
+            ];
+
+            if self.need_token_type_ids {
+                session_inputs.push((
+                    "token_type_ids".into(),
+                    Value::from_array(token_type_ids_array)?.into(),
+                ));
+            }
+
+            let run_options = RunOptions::new()?;
+            
+            let mut outputs = self
+                .session
+                .run_async(session_inputs, &run_options)
+                .await?;
+            sync_outputs(&mut outputs).await?;
+
+            let embeddings = match self.model {
+                SparseModel::SPLADEPPV1 => {
+                    let last_hidden_state_key = match outputs.len() {
+                        1 => outputs.keys().next().ok_or_else(|| {
+                            anyhow::anyhow!("Expected one output but found none")
+                        })?,
+                        _ => "last_hidden_state",
+                    };
+
+                    let (shape, data) =
+                        outputs[last_hidden_state_key].try_extract_tensor::<f32>()?;
+                    let shape: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
+                    let output_array = ndarray::ArrayViewD::from_shape(shape.as_slice(), data)?;
+                    let attention_mask_cow = ndarray::CowArray::from(&attention_mask_array);
+
+                    Self::post_process_splade(&output_array, &attention_mask_cow)
+                }
+                SparseModel::BGEM3 => {
+                    let output_key = outputs
+                        .keys()
+                        .next()
+                        .ok_or_else(|| anyhow::anyhow!("Expected at least one output"))?;
+
+                    let (shape, data) = outputs[output_key].try_extract_tensor::<f32>()?;
+                    let shape: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
+                    let hidden_states =
+                        ndarray::ArrayViewD::from_shape(shape.as_slice(), data)?;
+
+                    Self::post_process_bgem3(
+                        &hidden_states,
+                        &inputs_ids_array,
+                        &attention_mask_array,
+                    )
+                }
+            };
+
+            all_embeddings.extend(embeddings);
+        }
+
+        Ok(all_embeddings)
     }
 
     fn post_process_splade(
