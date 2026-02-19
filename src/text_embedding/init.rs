@@ -96,6 +96,11 @@ impl UserDefinedEmbeddingModel {
         }
     }
 
+    pub fn with_onnx_data_file(mut self, onnx_data_file: Vec<u8>) -> Self {
+        self.onnx_data_file = Some(onnx_data_file);
+        self
+    }
+
     pub fn with_quantization(mut self, quantization: QuantizationMode) -> Self {
         self.quantization = quantization;
         self
