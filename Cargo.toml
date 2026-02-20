@@ -64,6 +64,7 @@ tokenizers = { version = "0.22.0", default-features = false, features = ["unstab
 hf-hub = { git = "https://github.com/shermansiu/hf-hub", branch = "feat/wasm" }
 ort = { git = "https://github.com/shermansiu/ort", branch = "feat/wasm" }
 ort-sys = { git = "https://github.com/shermansiu/ort", branch = "feat/wasm" }
+ort-web = { git = "https://github.com/shermansiu/ort", branch = "feat/wasm" }
 
 [features]
 default = []
