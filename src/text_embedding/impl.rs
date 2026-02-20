@@ -509,7 +509,7 @@ impl TextEmbedding {
                 .session
                 .run_async(session_inputs, &run_options)
                 .await?;
-            sync_outputs(&mut outputs)
+            let _ = sync_outputs(&mut outputs)
                 .await
                 .map_err(anyhow::Error::new);
             let outputs_map = outputs
