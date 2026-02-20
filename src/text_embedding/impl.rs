@@ -132,7 +132,9 @@ impl TextEmbedding {
             max_length,
         } = options;
 
-        let threads = available_parallelism()?.get();
+        let threads = available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
 
         let mut session_builder = Session::builder()?
             .with_execution_providers(execution_providers)?
